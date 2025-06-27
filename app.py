@@ -69,7 +69,7 @@ OPENWEATHER_API_KEY = "77e0c3ce19e37b2f9c0a39cea77a7d19"
 @st.cache_resource
 def load_model():
     try:
-        model = tf.keras.models.load_model('plant_disease_classifier.h5')
+        model = tf.keras.models.load_model('plant_disease_classifier_quant.tflite')
         return model
     except Exception as e:
         st.error(f"Failed to load model: {str(e)}")
