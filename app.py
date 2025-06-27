@@ -69,8 +69,10 @@ OPENWEATHER_API_KEY = "77e0c3ce19e37b2f9c0a39cea77a7d19"
 @st.cache_resource
 def load_model():
     try:
-        model = tf.keras.models.load_model('plant_disease_classifier_quant.tflite')
-        return model
+        # Load TFLite model and allocate tensors
+        interpreter = tf.lite.Interpreter(model_path='plant_disease_classifier_quant.tflite')
+        interpreter.allocate_tensors()
+        return interpreter
     except Exception as e:
         st.error(f"Failed to load model: {str(e)}")
         return None
@@ -278,15 +280,15 @@ def display_recommendations(disease, location=None):
 
 # Image preprocessing function
 def preprocess_image(image):
-    img_array = np.array(image)
-    if img_array.shape[-1] == 4:
-        img_array = cv2.cvtColor(img_array, cv2.COLOR_RGBA2RGB)
-    elif len(img_array.shape) == 2:
-        img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2RGB)
-    img_array = cv2.resize(img_array, (224, 224))
-    img_array = img_array / 255.0
-    img_array = np.expand_dims(img_array, axis=0)
-    return img_array
+    img = np.array(image)
+    if img.shape[-1] == 4:  # RGBA case
+        img = cv2.cvtColor(img, cv2.COLOR_RGBA2RGB)
+    elif len(img.shape) == 2:  # Grayscale case
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+    img = cv2.resize(img, (224, 224))
+    img = img / 255.0  # Normalize to [0,1] range
+    img = np.expand_dims(img, axis=0)  # Add batch dimension
+    return img.astype(np.float32)  # Convert to float32
 
 # File uploader
 uploaded_file = st.file_uploader(
@@ -299,75 +301,95 @@ if model is not None and uploaded_file is None:
     st.info("ℹ️ Please upload a citrus leaf image to get a diagnosis")
 
 if model is not None and uploaded_file is not None:
-    # Display the uploaded image
-    image = Image.open(uploaded_file)
-    st.image(image, caption='Uploaded Image', use_container_width=True)
-    
-    # Preprocess and predict
-    with st.spinner('Analyzing the leaf...'):
-        processed_image = preprocess_image(image)
-        predictions = model.predict(processed_image)
-        predicted_class = np.argmax(predictions[0])
-        confidence = np.max(predictions[0])
-        time.sleep(1)
-    
-    # Display results
-    st.success("Analysis Complete!")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Diagnosis")
-        disease = class_names[predicted_class]
-        st.write(f"**Detected Disease:** {disease}")
-        st.write(f"**Confidence:** {confidence:.2%}")
-        st.warning("⚠️ Disease detected!")
+    try:
+        # Display the uploaded image
+        image = Image.open(uploaded_file)
+        st.image(image, caption='Uploaded Image', use_container_width=True)
         
-        # Add expander for recommendations
-        with st.expander("🛠️ View Treatment Recommendations", expanded=True):
-            display_recommendations(disease, location)
-    
-    with col2:
-        st.subheader("Probability Distribution")
-        chart_data = pd.DataFrame({
-            "Disease": class_names,
-            "Probability": predictions[0]
-        })
-        st.bar_chart(chart_data.set_index('Disease'))
+        # Preprocess and predict
+        with st.spinner('Analyzing the leaf...'):
+            processed_image = preprocess_image(image)
+            
+            # Get input and output tensors
+            input_details = model.get_input_details()
+            output_details = model.get_output_details()
+            
+            # Verify input shape and type
+            if processed_image.shape != tuple(input_details[0]['shape']):
+                processed_image = np.resize(processed_image, input_details[0]['shape'])
+            
+            # Set input tensor
+            model.set_tensor(input_details[0]['index'], processed_image)
+            
+            # Run inference
+            model.invoke()
+            
+            # Get predictions
+            predictions = model.get_tensor(output_details[0]['index'])
+            
+            predicted_class = np.argmax(predictions[0])
+            confidence = np.max(predictions[0])
+            time.sleep(1)
         
-        # Forecasting Section under the graph
-        st.subheader("🌤️ Disease Risk Forecasting")
-        st.write("""
-        This section analyzes local weather conditions to assess disease spread risk.
-        The forecast checks for:
-        - Ideal temperature ranges for disease development
-        - High humidity levels that favor infection
-        - Rain events that can spread pathogens
-        """)
+        # Display results
+        st.success("Analysis Complete!")
         
-        if location:
-            with st.spinner('Fetching weather forecast...'):
-                forecast_data = get_weather_forecast(location)
-                
-                if forecast_data:
-                    risk_factors = analyze_weather_risk(disease, forecast_data)
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Diagnosis")
+            disease = class_names[predicted_class]
+            st.write(f"**Detected Disease:** {disease}")
+            st.write(f"**Confidence:** {confidence:.2%}")
+            st.warning("⚠️ Disease detected!")
+            
+            # Add expander for recommendations
+            with st.expander("🛠️ View Treatment Recommendations", expanded=True):
+                display_recommendations(disease, location)
+        
+        with col2:
+            st.subheader("Probability Distribution")
+            chart_data = pd.DataFrame({
+                "Disease": class_names,
+                "Probability": predictions[0]
+            })
+            st.bar_chart(chart_data.set_index('Disease'))
+            
+            # Forecasting Section under the graph
+            st.subheader("🌤️ Disease Risk Forecasting")
+            st.write("""
+            This section analyzes local weather conditions to assess disease spread risk.
+            The forecast checks for:
+            - Ideal temperature ranges for disease development
+            - High humidity levels that favor infection
+            - Rain events that can spread pathogens
+            """)
+            
+            if location:
+                with st.spinner('Fetching weather forecast...'):
+                    forecast_data = get_weather_forecast(location)
                     
-                    if risk_factors:
-                        st.warning("⚠️ High Risk Conditions Detected")
-                        for factor in risk_factors:
-                            st.write(f"- {factor}")
+                    if forecast_data:
+                        risk_factors = analyze_weather_risk(disease, forecast_data)
                         
-                        st.info("""
-                        **Recommended Actions:**
-                        - Increase monitoring of plants
-                        - Apply preventive treatments
-                        - Improve air circulation
-                        - Remove infected plant material
-                        """)
+                        if risk_factors:
+                            st.warning("⚠️ High Risk Conditions Detected")
+                            for factor in risk_factors:
+                                st.write(f"- {factor}")
+                            
+                            st.info("""
+                            **Recommended Actions:**
+                            - Increase monitoring of plants
+                            - Apply preventive treatments
+                            - Improve air circulation
+                            - Remove infected plant material
+                            """)
+                        else:
+                            st.success("✅ Current weather shows low disease risk")
                     else:
-                        st.success("✅ Current weather shows low disease risk")
-                else:
-                    st.warning("Weather data unavailable - using general recommendations")
+                        st.warning("Weather data unavailable - using general recommendations")
+    except Exception as e:
+        st.error(f"An error occurred during analysis: {str(e)}")
 
 # Footer
 st.markdown("---")
